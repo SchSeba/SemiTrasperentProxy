@@ -1,0 +1,205 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: application-devel
+  labels:
+    app: libvirtd-devel
+spec:
+  ports:
+  - port: 9080
+    name: http
+  selector:
+    app: libvirtd-devel
+  type: LoadBalancer
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: libvirtd-client-devel
+  labels:
+    app: libvirtd-devel
+spec:
+  ports:
+  - port: 16509
+    name: client-connection
+  - port: 5900
+    name: spice
+  - port: 22
+    name: ssh
+  selector:
+    app: libvirtd-devel
+  type: LoadBalancer
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  creationTimestamp: null
+  name: libvirtd-devel
+spec:
+  replicas: 1
+  strategy: {}
+  template:
+    metadata:
+      annotations:
+        sidecar.istio.io/status: '{"version":"43466efda2266e066fb5ad36f2d1658de02fc9411f6db00ccff561300a2a3c78","initContainers":["istio-init","enable-core-dump"],"containers":["istio-proxy"],"volumes":["istio-envoy","istio-certs"]}'
+      creationTimestamp: null
+      labels:
+        app: libvirtd-devel
+    spec:
+      containers:
+      - image: docker.io/sebassch/mylibvirtd:devel
+        imagePullPolicy: Always
+        name: compute
+        ports:
+        - containerPort: 9080
+        - containerPort: 16509
+        - containerPort: 5900
+        - containerPort: 22
+        securityContext:
+          capabilities:
+            add:
+            - ALL
+          privileged: true
+          runAsUser: 0
+        volumeMounts:
+          - mountPath: /var/lib/libvirt/images
+            name: test-volume
+          - mountPath: /host-dev
+            name: host-dev
+          - mountPath: /host-sys
+            name: host-sys
+        resources: {}
+        env:
+          - name: LIBVIRTD_DEFAULT_NETWORK_DEVICE
+            value: "eth0"
+      - image: docker.io/sebassch/mytproxy:devel
+        imagePullPolicy: Always
+        name: proxy
+        resources: {}
+        securityContext:
+          privileged: true
+          capabilities:
+            add:
+            - NET_ADMIN
+      - args:
+        - proxy
+        - sidecar
+        - --configPath
+        - /etc/istio/proxy
+        - --binaryPath
+        - /usr/local/bin/envoy
+        - --serviceCluster
+        - productpage
+        - --drainDuration
+        - 45s
+        - --parentShutdownDuration
+        - 1m0s
+        - --discoveryAddress
+        - istio-pilot.istio-system:15005
+        - --discoveryRefreshDelay
+        - 1s
+        - --zipkinAddress
+        - zipkin.istio-system:9411
+        - --connectTimeout
+        - 10s
+        - --statsdUdpAddress
+        - istio-mixer.istio-system:9125
+        - --proxyAdminPort
+        - "15000"
+        - --controlPlaneAuthPolicy
+        - MUTUAL_TLS
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: INSTANCE_IP
+          valueFrom:
+            fieldRef:
+              fieldPath: status.podIP
+        image: docker.io/istio/proxy:0.7.1
+        imagePullPolicy: IfNotPresent
+        name: istio-proxy
+        resources: {}
+        securityContext:
+          privileged: false
+          readOnlyRootFilesystem: true
+          runAsUser: 1337
+        volumeMounts:
+        - mountPath: /etc/istio/proxy
+          name: istio-envoy
+        - mountPath: /etc/certs/
+          name: istio-certs
+          readOnly: true
+      initContainers:
+      - args:
+        - -p
+        - "15001"
+        - -u
+        - "1337"
+        - -i
+        - 10.96.0.0/12,192.168.0.0/16
+        image: docker.io/istio/proxy_init:0.7.1
+        imagePullPolicy: IfNotPresent
+        name: istio-init
+        resources: {}
+        securityContext:
+          capabilities:
+            add:
+            - NET_ADMIN
+      - args:
+        - -c
+        - sysctl -w kernel.core_pattern=/etc/istio/proxy/core.%e.%p.%t && ulimit -c
+          unlimited
+        command:
+        - /bin/sh
+        image: alpine
+        imagePullPolicy: IfNotPresent
+        name: enable-core-dump
+        resources: {}
+        securityContext:
+          privileged: true
+      volumes:
+      - emptyDir:
+          medium: Memory
+        name: istio-envoy
+      - name: istio-certs
+        secret:
+          optional: true
+          secretName: istio.default
+      - name: host-dev
+        hostPath:
+          path: /dev
+          type: Directory
+      - name: host-sys
+        hostPath:
+          path: /sys
+          type: Directory
+      - name: test-volume
+        hostPath:
+          # directory location on host
+          path: /bricks/brick1/volume/Images
+          # this field is optional
+          type: Directory
+status: {}
+
+---
+apiVersion: extensions/v1beta1
+kind: Ingress
+metadata:
+  name: gateway-devel
+  annotations:
+    kubernetes.io/ingress.class: "istio"
+spec:
+  rules:
+  - http:
+      paths:
+      - path: /devel-myvm
+        backend:
+          serviceName: application-devel
+          servicePort: 9080
