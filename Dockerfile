@@ -1,9 +1,8 @@
-FROM centos:7
+FROM fedora:27
 
 ENV container docker
 
-# nettle update is necessary for dnsmasq which is used by libvirt
-RUN yum install epel-release -y
+RUN curl --output /etc/yum.repos.d/fedora-virt-preview.repo https://fedorapeople.org/groups/virt/virt-preview/fedora-virt-preview.repo
 
 RUN yum -y update nettle && \
   yum install -y \
